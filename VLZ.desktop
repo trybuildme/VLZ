@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VLZ
+GenericName=VLZ Media Player
+Comment=VLZ Media Player
+Exec=vlz-gui
+Icon=VLZ
+Terminal=false
+Categories=AudioVideo;Player;
+StartupNotify=true
+StartupWMClass=VLZ
+Keywords=VLZ;media;player;audio;video;gui;dashboard;

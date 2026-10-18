@@ -1,0 +1,915 @@
+#!/usr/bin/env python3
+"""
+VLZ-GUI - Qt6 Dashboard for VLZ media player with embedded video
+Uses libvlc directly for embedded video playback
+"""
+
+import sys
+import os
+import subprocess
+import json
+import time
+from pathlib import Path
+from typing import Optional, List
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QSlider, QLabel, QListWidget, QListWidgetItem,
+    QFileDialog, QMessageBox, QStyle, QProgressBar, QFrame,
+    QMenu, QInputDialog, QDialog, QLineEdit, QComboBox, QDialogButtonBox,
+    QTabWidget, QCheckBox, QSpinBox, QColorDialog, QSizePolicy
+)
+from PyQt6.QtCore import (
+    Qt, QTimer, QProcess, QUrl, QSize, QRect, pyqtSignal, QObject, QEvent
+)
+from PyQt6.QtGui import QIcon, QPixmap, QAction, QFont, QColor, QPalette, QCursor
+
+# libvlc bindings - using ctypes for direct access
+import ctypes
+import ctypes.util
+
+# Find libvlc
+libvlc_path = ctypes.util.find_library('vlc')
+if not libvlc_path:
+    # Try common paths
+    for p in ['/usr/lib/x86_64-linux-gnu/libvlc.so.5', '/usr/lib/libvlc.so.5', '/usr/local/lib/libvlc.so.5']:
+        if os.path.exists(p):
+            libvlc_path = p
+            break
+
+if not libvlc_path:
+    print("ERROR: libvlc not found!")
+    sys.exit(1)
+
+libvlc = ctypes.CDLL(libvlc_path)
+
+# libvlc constants and types
+libvlc_instance_t = ctypes.c_void_p
+libvlc_media_t = ctypes.c_void_p
+libvlc_media_player_t = ctypes.c_void_p
+libvlc_time_t = ctypes.c_longlong
+
+# libvlc function signatures
+libvlc.libvlc_new.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+libvlc.libvlc_new.restype = libvlc_instance_t
+
+libvlc.libvlc_release.argtypes = [libvlc_instance_t]
+
+libvlc.libvlc_media_new_path.argtypes = [libvlc_instance_t, ctypes.c_char_p]
+libvlc.libvlc_media_new_path.restype = libvlc_media_t
+
+libvlc.libvlc_media_new_location.argtypes = [libvlc_instance_t, ctypes.c_char_p]
+libvlc.libvlc_media_new_location.restype = libvlc_media_t
+
+libvlc.libvlc_media_release.argtypes = [libvlc_media_t]
+
+libvlc.libvlc_media_player_new_from_media.argtypes = [libvlc_media_t]
+libvlc.libvlc_media_player_new_from_media.restype = libvlc_media_player_t
+
+libvlc.libvlc_media_player_release.argtypes = [libvlc_media_player_t]
+
+libvlc.libvlc_media_player_set_media.argtypes = [libvlc_media_player_t, libvlc_media_t]
+
+libvlc.libvlc_media_player_play.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_media_player_play.restype = ctypes.c_int
+
+libvlc.libvlc_media_player_pause.argtypes = [libvlc_media_player_t]
+
+libvlc.libvlc_media_player_stop.argtypes = [libvlc_media_player_t]
+
+libvlc.libvlc_media_player_is_playing.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_media_player_is_playing.restype = ctypes.c_int
+
+libvlc.libvlc_media_player_get_time.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_media_player_get_time.restype = libvlc_time_t
+
+libvlc.libvlc_media_player_set_time.argtypes = [libvlc_media_player_t, libvlc_time_t]
+libvlc.libvlc_media_player_set_time.restype = ctypes.c_int
+
+libvlc.libvlc_media_player_get_length.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_media_player_get_length.restype = libvlc_time_t
+
+libvlc.libvlc_media_player_set_nsobject.argtypes = [libvlc_media_player_t, ctypes.c_void_p]
+libvlc.libvlc_media_player_set_hwnd.argtypes = [libvlc_media_player_t, ctypes.c_void_p]
+libvlc.libvlc_media_player_set_xwindow.argtypes = [libvlc_media_player_t, ctypes.c_uint32]
+
+libvlc.libvlc_audio_get_volume.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_audio_get_volume.restype = ctypes.c_int
+
+libvlc.libvlc_audio_set_volume.argtypes = [libvlc_media_player_t, ctypes.c_int]
+libvlc.libvlc_audio_set_volume.restype = ctypes.c_int
+
+libvlc.libvlc_audio_get_mute.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_audio_get_mute.restype = ctypes.c_int
+
+libvlc.libvlc_audio_set_mute.argtypes = [libvlc_media_player_t, ctypes.c_int]
+
+libvlc.libvlc_media_player_get_rate.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_media_player_get_rate.restype = ctypes.c_float
+
+libvlc.libvlc_media_player_set_rate.argtypes = [libvlc_media_player_t, ctypes.c_float]
+
+libvlc.libvlc_video_get_scale.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_video_get_scale.restype = ctypes.c_float
+
+libvlc.libvlc_video_set_scale.argtypes = [libvlc_media_player_t, ctypes.c_float]
+
+libvlc.libvlc_video_get_aspect_ratio.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_video_get_aspect_ratio.restype = ctypes.c_char_p
+
+libvlc.libvlc_video_set_aspect_ratio.argtypes = [libvlc_media_player_t, ctypes.c_char_p]
+
+libvlc.libvlc_video_get_spu.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_video_get_spu.restype = ctypes.c_int
+
+libvlc.libvlc_video_set_spu.argtypes = [libvlc_media_player_t, ctypes.c_int]
+
+libvlc.libvlc_audio_get_track.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_audio_get_track.restype = ctypes.c_int
+
+libvlc.libvlc_audio_set_track.argtypes = [libvlc_media_player_t, ctypes.c_int]
+
+# State enum
+class libvlc_state_t:
+    NothingSpecial = 0
+    Opening = 1
+    Buffering = 2
+    Playing = 3
+    Paused = 4
+    Stopped = 5
+    Ended = 6
+    Error = 7
+
+libvlc.libvlc_media_player_get_state.argtypes = [libvlc_media_player_t]
+libvlc.libvlc_media_player_get_state.restype = ctypes.c_int
+
+
+class VideoWidget(QFrame):
+    """Widget that hosts the embedded video"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
+        self.setStyleSheet("background-color: #000;")
+        self.setMinimumSize(320, 180)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self._window_id = None
+        
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Get native window ID
+        self._window_id = int(self.winId())
+            
+    def get_window_id(self):
+        return self._window_id
+
+
+class VlzController(QObject):
+    """Controls libvlc directly for embedded playback"""
+    
+    state_changed = pyqtSignal(int)
+    time_changed = pyqtSignal(int, int)  # current, total (ms)
+    volume_changed = pyqtSignal(int)
+    track_changed = pyqtSignal(str, int, int)  # name, index, total
+    error_occurred = pyqtSignal(str)
+    queue_finished = pyqtSignal()
+    
+    def __init__(self, video_widget: VideoWidget):
+        super().__init__()
+        self.video_widget = video_widget
+        self.instance = None
+        self.media_player = None
+        self.queue: List[str] = []
+        self.current_index = 0
+        self.queue_total = 0
+        self.current_volume = 50
+        self._poll_timer = QTimer()
+        self._poll_timer.timeout.connect(self._poll_status)
+        
+    def initialize(self):
+        """Initialize libvlc instance"""
+        if self.instance:
+            return
+            
+        args = ["--no-ignore-config", "--video-title=VLZ Media Player"]
+        argc = len(args)
+        argv = (ctypes.c_char_p * argc)()
+        for i, arg in enumerate(args):
+            argv[i] = arg.encode('utf-8')
+            
+        self.instance = libvlc.libvlc_new(argc, argv)
+        if not self.instance:
+            self.error_occurred.emit("Failed to initialize libvlc")
+            return False
+        return True
+        
+    def play_media(self, path: str):
+        """Play a media file/URL"""
+        if not self.instance:
+            if not self.initialize():
+                return False
+                
+        # Release current media player if exists
+        if self.media_player:
+            libvlc.libvlc_media_player_stop(self.media_player)
+            libvlc.libvlc_media_player_release(self.media_player)
+            
+        # Create media
+        if "://" in path:
+            media = libvlc.libvlc_media_new_location(self.instance, path.encode('utf-8'))
+        else:
+            media = libvlc.libvlc_media_new_path(self.instance, path.encode('utf-8'))
+            
+        if not media:
+            self.error_occurred.emit(f"Failed to create media for {path}")
+            return False
+            
+        # Create media player
+        self.media_player = libvlc.libvlc_media_player_new_from_media(media)
+        libvlc.libvlc_media_release(media)
+        
+        if not self.media_player:
+            self.error_occurred.emit("Failed to create media player")
+            return False
+            
+        # Set video output to our widget
+        self._set_video_output()
+        
+        # Set initial volume
+        libvlc.libvlc_audio_set_volume(self.media_player, self.current_volume)
+        
+        # Play
+        if libvlc.libvlc_media_player_play(self.media_player) != 0:
+            self.error_occurred.emit("Failed to start playback")
+            return False
+            
+        # Start polling
+        self._poll_timer.start(500)
+        return True
+        
+    def _set_video_output(self):
+        """Set video output to the embedded widget"""
+        if not self.media_player or not self.video_widget:
+            return
+            
+        # Ensure widget has a window ID
+        if self.video_widget._window_id is None:
+            self.video_widget._window_id = int(self.video_widget.winId())
+            
+        win_id = self.video_widget._window_id
+        if win_id == 0:
+            return
+            
+        if sys.platform == "linux" or sys.platform == "linux2":
+            libvlc.libvlc_media_player_set_xwindow(self.media_player, ctypes.c_uint32(win_id))
+        elif sys.platform == "win32":
+            libvlc.libvlc_media_player_set_hwnd(self.media_player, ctypes.c_void_p(win_id))
+        elif sys.platform == "darwin":
+            libvlc.libvlc_media_player_set_nsobject(self.media_player, ctypes.c_void_p(win_id))
+            
+    def add_to_queue(self, files: List[str]):
+        """Add files to queue"""
+        self.queue.extend(files)
+        self.queue_total = len(self.queue)
+        if self.current_index == 0 and self.queue_total > 0 and not self.media_player:
+            self.play_media(self.queue[0])
+            
+    def play_pause(self):
+        if self.media_player:
+            if libvlc.libvlc_media_player_is_playing(self.media_player):
+                libvlc.libvlc_media_player_pause(self.media_player)
+            else:
+                libvlc.libvlc_media_player_play(self.media_player)
+                
+    def stop(self):
+        if self.media_player:
+            libvlc.libvlc_media_player_stop(self.media_player)
+            
+    def next_track(self):
+        if self.current_index < self.queue_total - 1:
+            self.current_index += 1
+            self.play_media(self.queue[self.current_index])
+            self.track_changed.emit(Path(self.queue[self.current_index]).name, 
+                                    self.current_index + 1, self.queue_total)
+            
+    def prev_track(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.play_media(self.queue[self.current_index])
+            self.track_changed.emit(Path(self.queue[self.current_index]).name, 
+                                    self.current_index + 1, self.queue_total)
+            
+    def seek(self, seconds: float):
+        if self.media_player:
+            libvlc.libvlc_media_player_set_time(self.media_player, int(seconds * 1000))
+            
+    def seek_relative(self, delta: float):
+        if self.media_player:
+            current = libvlc.libvlc_media_player_get_time(self.media_player)
+            libvlc.libvlc_media_player_set_time(self.media_player, current + int(delta * 1000))
+            
+    def set_volume(self, vol: int):
+        self.current_volume = max(0, min(100, vol))
+        if self.media_player:
+            libvlc.libvlc_audio_set_volume(self.media_player, self.current_volume)
+            
+    def set_mute(self, mute: bool):
+        if self.media_player:
+            libvlc.libvlc_audio_set_mute(self.media_player, 1 if mute else 0)
+            
+    def get_volume(self) -> int:
+        if self.media_player:
+            return libvlc.libvlc_audio_get_volume(self.media_player)
+        return self.current_volume
+        
+    def set_scale(self, scale: float):
+        if self.media_player:
+            libvlc.libvlc_video_set_scale(self.media_player, scale)
+            
+    def set_aspect_ratio(self, ratio: str):
+        if self.media_player and ratio != "Default":
+            libvlc.libvlc_video_set_aspect_ratio(self.media_player, ratio.encode('utf-8'))
+            
+    def set_subtitle_track(self, track: int):
+        if self.media_player:
+            libvlc.libvlc_video_set_spu(self.media_player, track)
+            
+    def set_subtitle_delay(self, delay: int):
+        # Not directly supported in libvlc, would need to use subtitle delay
+        pass
+        
+    def _poll_status(self):
+        """Poll media player status and emit signals"""
+        if not self.media_player:
+            return
+            
+        state = libvlc.libvlc_media_player_get_state(self.media_player)
+        if state != getattr(self, '_last_state', -1):
+            self._last_state = state
+            self.state_changed.emit(state)
+            
+        current = libvlc.libvlc_media_player_get_time(self.media_player)
+        total = libvlc.libvlc_media_player_get_length(self.media_player)
+        if total > 0:
+            self.time_changed.emit(current, total)
+            
+        vol = libvlc.libvlc_audio_get_volume(self.media_player)
+        if vol != self.current_volume:
+            self.current_volume = vol
+            self.volume_changed.emit(vol)
+            
+        # Check if ended
+        if state == libvlc_state_t.Ended:
+            self._poll_timer.stop()
+            if self.current_index < self.queue_total - 1:
+                self.current_index += 1
+                self.play_media(self.queue[self.current_index])
+            else:
+                self.queue_finished.emit()
+                
+    def cleanup(self):
+        self._poll_timer.stop()
+        if self.media_player:
+            libvlc.libvlc_media_player_stop(self.media_player)
+            libvlc.libvlc_media_player_release(self.media_player)
+            self.media_player = None
+        if self.instance:
+            libvlc.libvlc_release(self.instance)
+            self.instance = None
+
+
+class VlzDashboard(QMainWindow):
+    """Main dashboard window with embedded video"""
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("VLZ Media Player")
+        self.resize(1000, 700)
+        self.setMinimumSize(800, 500)
+        
+        # Enable drag and drop
+        self.setAcceptDrops(True)
+        
+        # Video widget
+        self.video_widget = VideoWidget()
+        
+        # Controller
+        self.controller = VlzController(self.video_widget)
+        self.controller.state_changed.connect(self._on_state_changed)
+        self.controller.time_changed.connect(self._on_time_changed)
+        self.controller.volume_changed.connect(self._on_volume_changed)
+        self.controller.track_changed.connect(self._on_track_changed)
+        self.controller.error_occurred.connect(self._on_error)
+        self.controller.queue_finished.connect(self._on_queue_finished)
+        
+        # UI setup
+        self._setup_dark_theme()
+        self._setup_ui()
+        self._setup_menu_bar()
+        
+    def _setup_dark_theme(self):
+        """Apply dark theme"""
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
+        palette.setColor(QPalette.ColorRole.Base, QColor(20, 20, 20))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(40, 40, 40))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(30, 30, 30))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(220, 220, 220))
+        palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
+        palette.setColor(QPalette.ColorRole.Button, QColor(45, 45, 45))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
+        palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
+        self.setPalette(palette)
+        
+    def _setup_ui(self):
+        """Build the UI"""
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Menu bar
+        self._setup_menu_bar()
+        
+        # Header
+        header = QHBoxLayout()
+        header.setContentsMargins(10, 5, 10, 5)
+        
+        title = QLabel("VLZ Media Player")
+        title.setFont(QFont("Sans", 14, QFont.Weight.Bold))
+        header.addWidget(title)
+        header.addStretch()
+        
+        self.btn_add = QPushButton("➕ Add Files")
+        self.btn_add.setFixedHeight(32)
+        self.btn_add.clicked.connect(self._on_add_files)
+        header.addWidget(self.btn_add)
+        
+        main_layout.addLayout(header)
+        
+        # Video area (main content)
+        self.video_widget.setMinimumSize(640, 360)
+        main_layout.addWidget(self.video_widget, 1)  # stretch factor 1
+        
+        # Controls bar at bottom
+        controls_bar = QFrame()
+        controls_bar.setFrameStyle(QFrame.Shape.NoFrame)
+        controls_bar.setStyleSheet("""
+            QFrame { background-color: #252525; border-top: 1px solid #333; }
+        """)
+        controls_bar.setFixedHeight(90)
+        controls_layout = QVBoxLayout(controls_bar)
+        controls_layout.setContentsMargins(10, 5, 10, 5)
+        controls_layout.setSpacing(5)
+        
+        # Track info
+        track_layout = QHBoxLayout()
+        self.lbl_track = QLabel("No media loaded")
+        self.lbl_track.setFont(QFont("Sans", 12))
+        track_layout.addWidget(self.lbl_track)
+        track_layout.addStretch()
+        self.lbl_queue_pos = QLabel("")
+        self.lbl_queue_pos.setStyleSheet("color: #888; font-size: 11px;")
+        track_layout.addWidget(self.lbl_queue_pos)
+        controls_layout.addLayout(track_layout)
+        
+        # Progress bar
+        progress_layout = QHBoxLayout()
+        self.lbl_time_current = QLabel("0:00")
+        self.lbl_time_current.setFixedWidth(45)
+        self.lbl_time_current.setAlignment(Qt.AlignmentFlag.AlignRight)
+        progress_layout.addWidget(self.lbl_time_current)
+        
+        self.slider_time = QSlider(Qt.Orientation.Horizontal)
+        self.slider_time.setRange(0, 1000)
+        self.slider_time.setValue(0)
+        self.slider_time.sliderPressed.connect(self._on_slider_pressed)
+        self.slider_time.sliderReleased.connect(self._on_slider_released)
+        self.slider_time.sliderMoved.connect(self._on_slider_moved)
+        self.slider_dragging = False
+        progress_layout.addWidget(self.slider_time)
+        
+        self.lbl_time_total = QLabel("0:00")
+        self.lbl_time_total.setFixedWidth(45)
+        progress_layout.addWidget(self.lbl_time_total)
+        controls_layout.addLayout(progress_layout)
+        
+        # Controls row - use nested layouts for perfect centering
+        controls = QHBoxLayout()
+        controls.setSpacing(10)
+        
+        # Left section: seek backward
+        left_section = QHBoxLayout()
+        left_section.setSpacing(10)
+        self.btn_seek_back = QPushButton("⏪ -10s")
+        self.btn_seek_back.setFixedSize(70, 32)
+        self.btn_seek_back.clicked.connect(lambda: self.controller.seek_relative(-10))
+        left_section.addWidget(self.btn_seek_back)
+        
+        # Center section: playback controls (perfectly centered)
+        center_section = QHBoxLayout()
+        center_section.setSpacing(5)
+        
+        self.btn_prev = QPushButton("⏮")
+        self.btn_prev.setFixedSize(40, 40)
+        self.btn_prev.clicked.connect(self._on_prev)
+        center_section.addWidget(self.btn_prev)
+        
+        self.btn_play = QPushButton("▶")
+        self.btn_play.setFixedSize(48, 48)
+        self.btn_play.setStyleSheet("""
+            QPushButton { 
+                background-color: #2a82da; 
+                border-radius: 24px; 
+                font-size: 18px;
+            }
+            QPushButton:hover { background-color: #3a92ea; }
+            QPushButton:pressed { background-color: #1a72ca; }
+        """)
+        self.btn_play.clicked.connect(self._on_play_pause)
+        center_section.addWidget(self.btn_play)
+        
+        self.btn_stop = QPushButton("⏹")
+        self.btn_stop.setFixedSize(40, 40)
+        self.btn_stop.clicked.connect(self._on_stop)
+        center_section.addWidget(self.btn_stop)
+        
+        self.btn_next = QPushButton("⏭")
+        self.btn_next.setFixedSize(40, 40)
+        self.btn_next.clicked.connect(self._on_next)
+        center_section.addWidget(self.btn_next)
+        
+        # Right section: seek forward
+        right_section = QHBoxLayout()
+        right_section.setSpacing(10)
+        self.btn_seek_fwd = QPushButton("⏩ +10s")
+        self.btn_seek_fwd.setFixedSize(70, 32)
+        self.btn_seek_fwd.clicked.connect(lambda: self.controller.seek_relative(10))
+        right_section.addWidget(self.btn_seek_fwd)
+        
+        # Build main controls with stretch factors for perfect centering
+        controls.addLayout(left_section, 1)
+        controls.addLayout(center_section, 1)  # This will be centered
+        controls.addLayout(right_section, 1)
+        
+        # Volume (far right)
+        vol_label = QLabel("🔊")
+        controls.addWidget(vol_label)
+        
+        self.slider_volume = QSlider(Qt.Orientation.Horizontal)
+        self.slider_volume.setRange(0, 100)
+        self.slider_volume.setValue(50)
+        self.slider_volume.setFixedWidth(100)
+        self.slider_volume.valueChanged.connect(self._on_volume_slider)
+        controls.addWidget(self.slider_volume)
+        
+        controls_layout.addLayout(controls)
+        
+        main_layout.addWidget(controls_bar)
+        
+        # Status bar
+        self.statusBar().showMessage("Ready")
+        
+    def _setup_menu_bar(self):
+        """Create menu bar"""
+        menubar = self.menuBar()
+        menubar.setStyleSheet("""
+            QMenuBar { background-color: #2a2a2a; color: #ddd; padding: 4px; }
+            QMenuBar::item { padding: 4px 12px; }
+            QMenuBar::item:selected { background-color: #3a3a3a; }
+            QMenu { background-color: #2a2a2a; color: #ddd; border: 1px solid #444; }
+            QMenu::item { padding: 6px 24px; }
+            QMenu::item:selected { background-color: #3a3a3a; }
+            QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }
+        """)
+        
+        # Media menu
+        media_menu = menubar.addMenu("&Media")
+        
+        act_open_file = QAction("Open &File...", self)
+        act_open_file.setShortcut("Ctrl+O")
+        act_open_file.triggered.connect(self._on_add_files)
+        media_menu.addAction(act_open_file)
+        
+        act_open_location = QAction("Open &Location...", self)
+        act_open_location.setShortcut("Ctrl+L")
+        act_open_location.triggered.connect(self._on_open_location)
+        media_menu.addAction(act_open_location)
+        
+        media_menu.addSeparator()
+        
+        act_quit = QAction("&Quit", self)
+        act_quit.setShortcut("Ctrl+Q")
+        act_quit.triggered.connect(self.close)
+        media_menu.addAction(act_quit)
+        
+        # Playback menu
+        playback_menu = menubar.addMenu("&Playback")
+        
+        act_play = QAction("&Play", self)
+        act_play.setShortcut("Space")
+        act_play.triggered.connect(self._on_play_pause)
+        playback_menu.addAction(act_play)
+        
+        act_pause = QAction("&Pause", self)
+        act_pause.triggered.connect(self._on_play_pause)
+        playback_menu.addAction(act_pause)
+        
+        act_stop = QAction("&Stop", self)
+        act_stop.setShortcut("Ctrl+.")
+        act_stop.triggered.connect(self._on_stop)
+        playback_menu.addAction(act_stop)
+        
+        playback_menu.addSeparator()
+        
+        act_next = QAction("&Next", self)
+        act_next.setShortcut("Ctrl+Right")
+        act_next.triggered.connect(self._on_next)
+        playback_menu.addAction(act_next)
+        
+        act_prev = QAction("&Previous", self)
+        act_prev.setShortcut("Ctrl+Left")
+        act_prev.triggered.connect(self._on_prev)
+        playback_menu.addAction(act_prev)
+        
+        # Audio menu
+        audio_menu = menubar.addMenu("&Audio")
+        
+        act_mute = QAction("&Mute", self)
+        act_mute.setShortcut("M")
+        act_mute.setCheckable(True)
+        act_mute.toggled.connect(self._on_mute_toggled)
+        audio_menu.addAction(act_mute)
+        self.act_mute = act_mute
+        
+        audio_menu.addSeparator()
+        
+        act_volume_up = QAction("Volume &Up", self)
+        act_volume_up.setShortcut("Ctrl+Up")
+        act_volume_up.triggered.connect(lambda: self._adjust_volume(5))
+        audio_menu.addAction(act_volume_up)
+        
+        act_volume_down = QAction("Volume &Down", self)
+        act_volume_down.setShortcut("Ctrl+Down")
+        act_volume_down.triggered.connect(lambda: self._adjust_volume(-5))
+        audio_menu.addAction(act_volume_down)
+        
+        # Video menu
+        video_menu = menubar.addMenu("&Video")
+        
+        act_fullscreen = QAction("&Fullscreen", self)
+        act_fullscreen.setShortcut("F")
+        act_fullscreen.setCheckable(True)
+        act_fullscreen.toggled.connect(self._on_fullscreen_toggled)
+        video_menu.addAction(act_fullscreen)
+        self.act_fullscreen = act_fullscreen
+        
+        video_menu.addSeparator()
+        
+        act_zoom = QMenu("&Zoom", self)
+        for z in [0.25, 0.5, 1.0, 2.0]:
+            a = QAction(f"{int(z*100)}%", self)
+            a.setCheckable(True)
+            a.setChecked(z == 1.0)
+            a.triggered.connect(lambda checked, scale=z: self.controller.set_scale(scale))
+            act_zoom.addAction(a)
+        video_menu.addMenu(act_zoom)
+        
+        act_aspect = QMenu("&Aspect Ratio", self)
+        for ar in ["Default", "1:1", "4:3", "16:9", "2.21:1", "2.35:1", "2.39:1", "5:4"]:
+            a = QAction(ar, self)
+            a.setCheckable(True)
+            a.setChecked(ar == "Default")
+            a.triggered.connect(lambda checked, ratio=ar: self.controller.set_aspect_ratio(ratio))
+            act_aspect.addAction(a)
+        video_menu.addMenu(act_aspect)
+        
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+        
+        act_media_info = QAction("&Media Information", self)
+        act_media_info.setShortcut("Ctrl+I")
+        act_media_info.triggered.connect(self._on_media_info)
+        tools_menu.addAction(act_media_info)
+        
+        act_prefs = QAction("&Preferences", self)
+        act_prefs.setShortcut("Ctrl+P")
+        act_prefs.triggered.connect(self._on_preferences)
+        tools_menu.addAction(act_prefs)
+        
+        # View menu
+        view_menu = menubar.addMenu("&View")
+        
+        act_fullscreen_view = QAction("&Fullscreen Interface", self)
+        act_fullscreen_view.setShortcut("F11")
+        act_fullscreen_view.triggered.connect(self._on_fullscreen_interface)
+        view_menu.addAction(act_fullscreen_view)
+        
+        # Help menu
+        help_menu = menubar.addMenu("&Help")
+        
+        act_about = QAction("&About VLZ", self)
+        act_about.triggered.connect(self._on_about)
+        help_menu.addAction(act_about)
+        
+    def _on_add_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Add Media Files", str(Path.home()),
+            "Media Files (*.mp3 *.wav *.flac *.ogg *.m4a *.mp4 *.mkv *.avi *.webm *.mov *.ts);;All Files (*)"
+        )
+        if files:
+            self.controller.add_to_queue(files)
+            if self.controller.current_index == 0 and len(files) == 1:
+                self._on_track_changed(Path(files[0]).name, 1, len(files))
+            self.statusBar().showMessage(f"Added {len(files)} file(s) to queue")
+            
+    def _on_open_location(self):
+        url, ok = QInputDialog.getText(self, "Open Location", "Enter URL:")
+        if ok and url:
+            self.controller.add_to_queue([url])
+            self.statusBar().showMessage(f"Opening {url}")
+            
+    def _on_play_pause(self):
+        self.controller.play_pause()
+        
+    def _on_stop(self):
+        self.controller.stop()
+        self.lbl_track.setText("Stopped")
+        self.slider_time.setValue(0)
+        self.lbl_time_current.setText("0:00")
+        
+    def _on_next(self):
+        self.controller.next_track()
+        
+    def _on_prev(self):
+        self.controller.prev_track()
+        
+    def _on_volume_slider(self, value: int):
+        self.controller.set_volume(value)
+        
+    def _adjust_volume(self, delta: int):
+        new_vol = max(0, min(100, self.slider_volume.value() + delta))
+        self.controller.set_volume(new_vol)
+        self.slider_volume.setValue(new_vol)
+        
+    def _on_mute_toggled(self, muted: bool):
+        self.controller.set_mute(muted)
+        if muted:
+            self._last_volume = self.slider_volume.value()
+            self.slider_volume.setValue(0)
+        else:
+            vol = getattr(self, '_last_volume', 50)
+            self.controller.set_volume(vol)
+            self.slider_volume.setValue(vol)
+            
+    def _on_slider_pressed(self):
+        self.slider_dragging = True
+        
+    def _on_slider_moved(self, value: int):
+        if self.slider_dragging and self.controller.media_player:
+            total = libvlc.libvlc_media_player_get_length(self.controller.media_player)
+            if total > 0:
+                target = value / 1000 * total
+                self.lbl_time_current.setText(self._fmt_time(target / 1000))
+                
+    def _on_slider_released(self):
+        if self.controller.media_player:
+            total = libvlc.libvlc_media_player_get_length(self.controller.media_player)
+            if total > 0:
+                target = self.slider_time.value() / 1000 * total
+                self.controller.seek(target / 1000)
+        self.slider_dragging = False
+        
+    def _on_fullscreen_toggled(self, fullscreen: bool):
+        if fullscreen:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+            
+    def _on_fullscreen_interface(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+            
+    def _on_media_info(self):
+        if self.controller.queue and self.controller.current_index >= 0:
+            idx = self.controller.current_index
+            if idx < len(self.controller.queue):
+                path = self.controller.queue[idx]
+                info = f"File: {Path(path).name}\nPath: {path}"
+                QMessageBox.information(self, "Media Information", info)
+        else:
+            QMessageBox.information(self, "Media Information", "No media loaded.")
+            
+    def _on_preferences(self):
+        QMessageBox.information(self, "Preferences", "Preferences dialog not implemented yet.")
+        
+    def _on_about(self):
+        QMessageBox.about(self, "About VLZ", 
+            "VLZ Media Player 0.1.0\n\n"
+            "A minimal media player with embedded video.\n"
+            "Built with Qt6 and Python using libvlc directly.\n\n"
+            "Developed by: TryBuildMe")
+            
+    def _on_state_changed(self, state: int):
+        if state == libvlc_state_t.Playing:
+            self.btn_play.setText("⏸")
+        else:
+            self.btn_play.setText("▶")
+        states = ["Nothing", "Opening", "Buffering", "Playing", "Paused", "Stopped", "Ended", "Error"]
+        state_name = states[state] if 0 <= state < len(states) else "Unknown"
+        self.statusBar().showMessage(f"State: {state_name}")
+        
+    def _on_time_changed(self, current: int, total: int):
+        if not self.slider_dragging and total > 0:
+            self.slider_time.setRange(0, 1000)
+            self.slider_time.setValue(int(current / total * 1000))
+        self.lbl_time_current.setText(self._fmt_time(current / 1000))
+        self.lbl_time_total.setText(self._fmt_time(total / 1000))
+        
+    def _on_volume_changed(self, vol: int):
+        self.slider_volume.blockSignals(True)
+        self.slider_volume.setValue(vol)
+        self.slider_volume.blockSignals(False)
+        self.act_mute.setChecked(vol == 0)
+        
+    def _on_track_changed(self, name: str, index: int, total: int):
+        self.lbl_track.setText(name)
+        self.lbl_queue_pos.setText(f"Track {index} of {total}")
+        
+    def _on_error(self, msg: str):
+        self.statusBar().showMessage(f"Error: {msg}")
+        QMessageBox.warning(self, "Error", msg)
+        
+    def _on_queue_finished(self):
+        self.lbl_track.setText("Queue finished")
+        self.lbl_queue_pos.setText("")
+        self.btn_play.setText("▶")
+        self.statusBar().showMessage("Queue finished")
+        
+    def _fmt_time(self, seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+        
+    def dragEnterEvent(self, event):
+        """Accept drag events with files"""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+        
+    def dropEvent(self, event):
+        """Handle dropped files"""
+        files = []
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                ext = Path(path).suffix.lower()
+                if ext in {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.mp4', '.mkv', '.avi', '.webm', '.mov', '.m4v', '.3gp', '.ogv', '.ts', '.m3u', '.pls'}:
+                    files.append(path)
+                else:
+                    files.append(path)
+                    
+        if files:
+            self.controller.add_to_queue(files)
+            if self.controller.current_index == 0 and len(files) == 1:
+                self._on_track_changed(Path(files[0]).name, 1, len(files))
+            self.statusBar().showMessage(f"Added {len(files)} file(s) to queue")
+        event.acceptProposedAction()
+        
+    def closeEvent(self, event):
+        self.controller.cleanup()
+        event.accept()
+
+
+def main():
+    # Force XWayland for libvlc window embedding on Wayland
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    
+    app = QApplication(sys.argv)
+    app.setApplicationName("VLZ")
+    app.setApplicationDisplayName("VLZ Media Player")
+    
+    window = VlzDashboard()
+    window.show()
+    
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
