@@ -16,7 +16,7 @@ A minimal, modern media player with embedded video playback, built with Qt6 and 
 
 ## Screenshots
 
-![VLZ Media Player]([docs/screenshot.png](https://github.com/trybuildme/VLZ/blob/main/vlz_media_player.png))
+![VLZ Media Player](https://github.com/trybuildme/VLZ/blob/main/vlz_media_player.png)
 
 ## Installation
 
